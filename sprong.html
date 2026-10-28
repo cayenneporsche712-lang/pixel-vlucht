@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0b1a">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Wolkenspringer</title>
+<style>
+:root{--bg:#0b0b1a;--fg:#e8e8ff;--k:#ff8a3d;--mut:#7a7aa8}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html,body{height:100%;background:var(--bg);color:var(--fg);font-family:"Courier New",ui-monospace,Menlo,monospace;overflow:hidden;overscroll-behavior:none}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.15) 0 1px,transparent 1px 3px);z-index:9}
+#wrap{position:fixed;inset:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#hud{display:flex;align-items:center;gap:10px;height:48px;padding:0 10px;border-bottom:2px solid #22224a;flex:none}
+#hud a{color:var(--fg);text-decoration:none;border:2px solid var(--mut);padding:6px 10px;font-weight:bold;font-size:13px}
+#title{flex:1;color:var(--k);font-weight:bold;font-size:14px;letter-spacing:1px}
+#bPause{all:unset;width:44px;height:36px;text-align:center;border:2px solid var(--mut);font-weight:bold;cursor:pointer}
+#stage{position:relative;flex:1 1 0;min-height:0}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#ov{position:fixed;inset:0;background:rgba(5,5,13,.84);display:flex;align-items:center;justify-content:center;padding:16px;z-index:5}
+.box{width:100%;max-width:340px;border:2px solid var(--k);background:#12122a;padding:22px 18px;text-align:center;box-shadow:6px 6px 0 var(--k)}
+.box h2{color:var(--k);font-size:24px;margin-bottom:12px}
+.box p{font-size:14px;line-height:1.45;color:#d0d0f0;margin-bottom:12px}
+.box p b{color:#f2ff3d}
+.box button{all:unset;display:block;width:100%;box-sizing:border-box;padding:13px;margin-top:10px;background:var(--k);color:#0b0b1a;font-weight:bold;font-size:16px;cursor:pointer;text-align:center}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud"><a href="index.html">◀ MENU</a><div id="title">WOLKENSPRINGER</div><button id="bPause">II</button></div>
+  <div id="stage"><canvas id="c"></canvas></div>
+</div>
+<div id="ov"><div class="box"><h2 id="ovT"></h2><p id="ovP"></p><button id="ovB"></button></div></div>
+<script>
+'use strict';
+// Wolkenspringer: eigen retro-platformer. Piloot Pip rent door procedureel gebouwde wolkenwerelden.
+const $=id=>document.getElementById(id);
+const store={get(k,d){try{const v=localStorage.getItem('pv_'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem('pv_'+k,JSON.stringify(v))}catch(e){}}};
+const LW=360,LH=640,VH=480,T=24,ROWS=20;
+const cvs=$('c'),ctx=cvs.getContext('2d');
+let scale=1,ox=0,oy=0;
+
+// ---------- geluid ----------
+let AC=null;const muted=store.get('mute',false);
+function unlockAudio(){try{if(!AC)AC=new(window.AudioContext||window.webkitAudioContext)();if(AC.state==='suspended')AC.resume()}catch(e){}}
+function beep(f,d=.08,type='square',v=.05,slide=0){if(muted||!AC)return;try{const t=AC.currentTime,o=AC.createOscillator(),g=AC.createGain();o.type=type;o.frequency.setValueAtTime(f,t);if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(30,f+slide),t+d);g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(g).connect(AC.destination);o.start(t);o.stop(t+d+.02)}catch(e){}}
+
+// ---------- hulpjes ----------
+function rng(s){return()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function text(c,t,x,y,size,col,align){c.font='bold '+size+'px "Courier New",monospace';c.fillStyle=col;c.textAlign=align||'center';c.textBaseline='middle';c.fillText(t,x,y)}
+function pix(c,rows,pal,x,y,ps,flip){const w=rows[0].length;for(let r=0;r<rows.length;r++)for(let i=0;i<w;i++){const ch=rows[r][flip?w-1-i:i];if(ch==='.')continue;c.fillStyle=pal[ch];c.fillRect(x+i*ps,y+r*ps,ps,ps)}}
+const parts=[];
+function burst(x,y,col,n=10,sp=140){for(let i=0;i<n;i++){const a=Math.random()*6.283,v=sp*(.3+Math.random());parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v-60,l:.4+Math.random()*.4,col})}}
+const pops=[];function pop(t,x,y,col){pops.push({t,x,y,col:col||'#f2ff3d',l:.9})}
+
+// ---------- sprites ----------
+const PIP_PAL={h:'#7a4a2a',g:'#3df2ff',s:'#ffcc99',r:'#ff3d5a',b:'#3d6aff',k:'#2a1a10'};
+const PIP_TOP=['..hhhh..','.hhhhhh.','.gggggg.','.ssssss.','.ssssss.','..rrrr..','.bbbbbb.','sbbbbbbs','.bbbbbb.'];
+const PIP_LEGS=[['.bb..bb.','.kk..kk.'],['..bbbb..','.kk.kk..'],['.bb..bb.','kk....kk']];
+
+// ---------- levelgenerator ----------
+const THEMES=[
+  {name:'WOLKENWEIDE',sky:['#4aa8ff','#bfe6ff'],hill:'#6ac46a',grass:'#3dff8a',dirt:'#8a5a32'},
+  {name:'ZONSONDERGANG',sky:['#ff7a5a','#ffd28a'],hill:'#b45a8a',grass:'#ffb43d',dirt:'#7a3a2a'},
+  {name:'NACHTVLUCHT',sky:['#0b0b2a','#3a2a6a'],hill:'#2a2a55',grass:'#3df2ff',dirt:'#3a3a6a'}];
+function gen(n){
+  const r=rng(n*7919+13),W=110+Math.min(n,8)*20,m=Array.from({length:ROWS},()=>Array(W).fill('.'));
+  const ents=[],items=[];let h=15,x=0,cp=null,capPlaced=false;
+  const col=(cx,hh)=>{for(let y=hh;y<ROWS;y++)m[y][cx]='#'};
+  const flat=len=>{for(let i=0;i<len;i++)col(x+i,h)};
+  const star=(cx,cy)=>items.push({t:'*',x:cx,y:cy});
+  flat(8);x=8;
+  while(x<W-14){
+    const f=r();
+    if(!capPlaced&&x>25){flat(5);items.push({t:'p',x:(x+2)*T+12,y:(h-2)*T+12});capPlaced=true;x+=5;continue}
+    if(!cp&&x>W/2){flat(4);cp={x:(x+2)*T,y:h*T};items.push({t:'C',x:(x+2)*T,y:h*T});x+=4;continue}
+    if(f<.28){const len=4+(r()*6|0);flat(len);
+      if(len>=5&&r()<.55+n*.05)ents.push({t:r()<.2+n*.05?'s':'w',x:(x+len/2|0)*T,y:(h-1)*T});
+      if(r()<.5)for(let i=1;i<len-1;i++)star((x+i)*T+12,(h-2)*T+12);x+=len}
+    else if(f<.44){const g=2+(r()*Math.min(3,1+n)|0);for(let i=0;i<g;i++)star((x+i)*T+12,(h-3)*T+12-Math.sin((i+.5)/g*Math.PI)*30);x+=g;flat(2);x+=2}
+    else if(f<.58){const d=(r()<.5?-1:1)*(1+(r()*3|0));h=Math.max(10,Math.min(17,h+d));const len=3+(r()*3|0);flat(len);x+=len}
+    else if(f<.70){const g=4+(r()*3|0),ph=h-2;for(let i=1;i<g-1;i++){m[ph][x+i]='=';star((x+i)*T+12,(ph-1)*T+12)}x+=g;flat(2);x+=2}
+    else if(f<.81){flat(6);m[h-1][x+2]='^';if(r()<.5+n*.05)m[h-1][x+3]='^';x+=6}
+    else if(f<.90){flat(10);m[h-1][x+1]='S';for(let i=0;i<4;i++)star((x+1)*T+12,(h-6-i)*T+12);x+=10}
+    else{flat(7);ents.push({t:'f',x:(x+3)*T,y:(h-4)*T});x+=7}
+  }
+  for(;x<W;x++)col(x,h);
+  for(const e of ents){e.x0=e.x;e.y0=e.y;e.vx=e.t==='s'?-35:-55;e.vy=0;e.w=18;e.h=18;e.dead=false;e.ph=Math.random()*6}
+  return{m,W,ents,items,goal:{x:(W-6)*T,y:h*T},spawn:{x:2*T,y:15*T-22},theme:THEMES[(n-1)%THEMES.length]};
+}
+
+// ---------- spelstatus ----------
+const S={state:'ready',level:1,lives:3,stars:0,score:0,best:store.get('best_sprong',0),L:null,cpx:0,cpy:0,cam:0,t:0,dead:0,clear:0};
+const P={x:0,y:0,w:16,h:22,vx:0,vy:0,on:false,face:1,coy:0,buf:0,jumps:0,cap:false,inv:0,anim:0};
+const inp={L:false,R:false,J:false,jp:false};
+function startLevel(){S.L=gen(S.level);S.cpx=S.L.spawn.x;S.cpy=S.L.spawn.y;respawn();S.clear=0;pop(S.L.theme.name+' '+S.level,180,200,'#fff')}
+function respawn(){Object.assign(P,{x:S.cpx,y:S.cpy,vx:0,vy:0,on:false,face:1,coy:0,buf:0,jumps:0,inv:1.2});S.dead=0}
+function newGame(){Object.assign(S,{level:1,lives:3,stars:0,score:0});P.cap=false;startLevel()}
+function addScore(n){S.score+=n}
+
+function tile(tx,ty){if(ty<0||ty>=ROWS)return'.';if(tx<0||tx>=S.L.W)return'#';return S.L.m[ty][tx]}
+function solid(tx,ty){const c=tile(tx,ty);return c==='#'||c==='='}
+function boxHits(x,y,w,h){const x0=Math.floor(x/T),x1=Math.floor((x+w-1)/T),y0=Math.floor(y/T),y1=Math.floor((y+h-1)/T);for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++)if(solid(tx,ty))return{tx,ty};return null}
+// Beweegt een lichaam met botsing tegen tegels; geeft aan of het een muur raakte.
+function moveBody(b,dt){let wall=false;b.x+=b.vx*dt;let h=boxHits(b.x,b.y,b.w,b.h);
+  if(h){wall=true;if(b.vx>0)b.x=h.tx*T-b.w;else if(b.vx<0)b.x=(h.tx+1)*T;b.vx=0}
+  b.y+=b.vy*dt;b.on=false;h=boxHits(b.x,b.y,b.w,b.h);
+  if(h){if(b.vy>0){b.y=h.ty*T-b.h;b.on=true}else b.y=(h.ty+1)*T;b.vy=0}return wall}
+const hit=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+
+function hurt(){if(P.inv>0||S.dead)return;if(P.cap){P.cap=false;P.inv=1.5;beep(300,.2,'square',.05,-150);burst(P.x+8,P.y,'#f2ff3d',12);return}die()}
+function die(){if(S.dead)return;S.dead=1.2;S.lives--;beep(400,.6,'square',.06,-350);burst(P.x+8,P.y+11,'#ff3d5a',20,200);P.cap=false}
+
+function update(dt){
+  S.t+=dt;const L=S.L;
+  for(let i=parts.length-1;i>=0;i--){const p=parts[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=500*dt;p.l-=dt;if(p.l<=0)parts.splice(i,1)}
+  for(let i=pops.length-1;i>=0;i--){pops[i].y-=30*dt;pops[i].l-=dt;if(pops[i].l<=0)pops.splice(i,1)}
+  if(S.dead){S.dead-=dt;if(S.dead<=0){S.dead=0;if(S.lives<=0){gameOver();return}respawn()}return}
+  if(S.clear){S.clear-=dt;if(S.clear<=0){S.level++;startLevel()}return}
+  // speler
+  const ax=(inp.R?1:0)-(inp.L?1:0);
+  if(ax){P.vx+=ax*1400*dt;P.face=ax}else P.vx-=Math.sign(P.vx)*Math.min(Math.abs(P.vx),1300*dt);
+  P.vx=Math.max(-190,Math.min(190,P.vx));
+  if(inp.jp){P.buf=.12;inp.jp=false}else P.buf-=dt;
+  if(P.on){P.coy=.1;P.jumps=0}else P.coy-=dt;
+  if(P.buf>0&&(P.coy>0||(P.cap&&P.jumps<1))){if(P.coy<=0){P.jumps++;burst(P.x+8,P.y+22,'#fff',6,80)}P.vy=-620;P.buf=0;P.coy=0;beep(P.coy>0?520:700,.08,'square',.04,300)}
+  P.vy+=(!inp.J&&P.vy<0?3900:1800)*dt;P.vy=Math.min(P.vy,900);
+  moveBody(P,dt);if(P.y<-200)P.y=-200;
+  if(P.inv>0)P.inv-=dt;P.anim+=Math.abs(P.vx)*dt;
+  // tegels: stekels en veren
+  const fx0=Math.floor((P.x+2)/T),fx1=Math.floor((P.x+P.w-3)/T),fy0=Math.floor((P.y+6)/T),fy1=Math.floor((P.y+P.h-1)/T);
+  for(let ty=fy0;ty<=fy1;ty++)for(let tx=fx0;tx<=fx1;tx++){const c=tile(tx,ty);
+    if(c==='^'&&P.y+P.h>ty*T+12)hurt();
+    if(c==='S'&&P.vy>=0&&P.y+P.h>ty*T+10){P.vy=-950;beep(300,.25,'triangle',.06,600);burst(tx*T+12,ty*T+18,'#f2ff3d',8)}}
+  if(P.y>ROWS*T+40){P.inv=0;P.cap=false;die();return}
+  // vijanden
+  for(const e of L.ents){if(e.dead||Math.abs(e.x-P.x)>500)continue;
+    if(e.t==='f'){e.ph+=dt;e.x=e.x0+Math.sin(e.ph*1.1)*60;e.y=e.y0+Math.sin(e.ph*2.4)*28}
+    else{e.vy=Math.min(e.vy+1800*dt,900);const wall=moveBody(e,dt);
+      if(wall){e.vx=e.vx===0?(e.t==='s'?35:55):e.vx}
+      const dir=Math.sign(e.vx)||1,ahead=Math.floor((dir>0?e.x+e.w+1:e.x-1)/T),below=Math.floor((e.y+e.h+2)/T);
+      if(wall||(e.on&&!solid(ahead,below)))e.vx=-dir*(e.t==='s'?35:55);
+      if(e.y>ROWS*T+40)e.dead=true}
+    if(hit(P,e)){if(e.t!=='s'&&P.vy>0&&P.y+P.h-e.y<14){e.dead=true;P.vy=inp.J?-560:-380;addScore(100);pop('+100',e.x+9,e.y);beep(200,.12,'square',.05,-120);burst(e.x+9,e.y+9,e.t==='f'?'#3df2ff':'#ff8a3d',12)}else hurt()}}
+  // voorwerpen
+  for(const it of L.items){if(it.got)continue;
+    if(it.t==='C'){if(!it.on&&P.x+P.w>it.x&&P.x<it.x+T){it.on=true;S.cpx=it.x;S.cpy=it.y-22;beep(660,.2,'triangle',.06,400);pop('CHECKPOINT',it.x+12,it.y-60,'#3dff8a')}continue}
+    if(Math.abs(P.x+8-it.x)<16&&Math.abs(P.y+11-it.y)<20){it.got=true;
+      if(it.t==='*'){S.stars++;addScore(10);beep(1200,.05,'square',.03,400);if(S.stars%50===0){S.lives++;pop('+1 LEVEN',it.x,it.y,'#ff3d5a');beep(880,.3,'triangle',.06,600)}}
+      else if(it.t==='p'){P.cap=true;addScore(200);pop('PROPELLERPET! DUBBELE SPRONG',180,180,'#f2ff3d');beep(500,.4,'triangle',.06,900)}}}
+  // finish
+  if(P.x>L.goal.x){S.clear=2;const bonus=500+S.level*100;addScore(bonus);pop('LEVEL GEHAALD! +'+bonus,180,200,'#3dff8a');beep(523,.15,'square',.05);setTimeout(()=>beep(659,.15,'square',.05),150);setTimeout(()=>beep(784,.3,'square',.05),300)}
+  S.cam=Math.max(0,Math.min(L.W*T-LW,P.x-140));
+}
+
+// ---------- tekenen ----------
+function drawTile(c,ch,x,y,above,th){
+  if(ch==='#'){c.fillStyle=th.dirt;c.fillRect(x,y,T,T);c.fillStyle='rgba(0,0,0,.18)';c.fillRect(x+4,y+10,4,4);c.fillRect(x+15,y+17,4,4);
+    if(above!=='#'){c.fillStyle=th.grass;c.fillRect(x,y,T,6);c.fillStyle='rgba(0,0,0,.2)';c.fillRect(x,y+6,T,2)}}
+  else if(ch==='='){c.fillStyle='#c8874a';c.fillRect(x,y,T,12);c.fillStyle='#8a5a32';c.fillRect(x,y+9,T,3);c.fillRect(x+11,y,2,12)}
+  else if(ch==='^'){c.fillStyle='#d0d0e0';for(let i=0;i<3;i++){c.beginPath();c.moveTo(x+i*8,y+T);c.lineTo(x+i*8+4,y+10);c.lineTo(x+i*8+8,y+T);c.fill()}}
+  else if(ch==='S'){c.fillStyle='#7a7aa8';c.fillRect(x+3,y+18,18,6);c.fillStyle='#f2ff3d';c.fillRect(x+6,y+12,12,3);c.fillRect(x+9,y+15,6,3);c.fillStyle='#ff3d5a';c.fillRect(x+2,y+9,20,4)}}
+function drawEnemy(c,e,x,y){const t=S.t;
+  if(e.t==='w'){c.fillStyle='#ff8a3d';c.fillRect(x,y+4,18,12);c.fillRect(x+2,y+2,14,2);c.fillStyle='#fff';c.fillRect(x+3,y+6,5,5);c.fillRect(x+10,y+6,5,5);c.fillStyle='#0b0b1a';const d=e.vx>0?2:0;c.fillRect(x+4+d,y+8,2,2);c.fillRect(x+11+d,y+8,2,2);
+    c.fillStyle='#2a1a10';const s=(t*8|0)%2;c.fillRect(x+1+s*2,y+16,5,2);c.fillRect(x+12-s*2,y+16,5,2);c.fillStyle='#ccc';const pw=(t*20|0)%2?12:4;c.fillRect(x+9-pw/2,y-1,pw,2)}
+  else if(e.t==='s'){c.fillStyle='#b43dff';c.fillRect(x+1,y+6,16,12);c.fillStyle='#e8e8ff';for(let i=0;i<4;i++){c.beginPath();c.moveTo(x+1+i*4,y+7);c.lineTo(x+3+i*4,y);c.lineTo(x+5+i*4,y+7);c.fill()}
+    c.fillStyle='#fff';c.fillRect(x+4,y+10,3,3);c.fillRect(x+11,y+10,3,3)}
+  else{c.fillStyle='#3d6aff';c.fillRect(x+2,y+6,14,8);c.fillStyle='#f2ff3d';c.fillRect(e.vx>=0?x+16:x-2,y+8,4,3);c.fillStyle='#fff';c.fillRect(x+10,y+7,3,3);c.fillStyle='#6a9aff';const up=(t*10|0)%2;c.fillRect(x+3,up?y:y+12,10,up?6:5)}}
+function drawPip(c,x,y){
+  if(P.inv>0&&(P.inv*12|0)%2&&!S.dead)return;const fl=P.face<0;
+  pix(c,PIP_TOP,PIP_PAL,x,y,2,fl);const legs=!P.on?PIP_LEGS[2]:Math.abs(P.vx)>20?PIP_LEGS[(P.anim/14|0)%2]:PIP_LEGS[0];pix(c,legs,PIP_PAL,x,y+18,2,fl);
+  if(P.cap){c.fillStyle='#f2ff3d';c.fillRect(x+7,y-4,2,4);const w=(S.t*24|0)%2?14:6;c.fillRect(x+8-w/2,y-5,w,2)}}
+function render(){
+  ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#05050d';ctx.fillRect(0,0,cvs.width,cvs.height);
+  const dpr=cvs.width/(cvs.getBoundingClientRect().width||1);ctx.setTransform(dpr*scale,0,0,dpr*scale,dpr*ox,dpr*oy);ctx.imageSmoothingEnabled=false;
+  const c=ctx;c.save();c.beginPath();c.rect(0,0,LW,LH);c.clip();
+  if(!S.L){c.restore();return}
+  const L=S.L,th=L.theme,cam=Math.round(S.cam);
+  const gr=c.createLinearGradient(0,0,0,VH);gr.addColorStop(0,th.sky[0]);gr.addColorStop(1,th.sky[1]);c.fillStyle=gr;c.fillRect(0,0,LW,VH);
+  c.fillStyle='rgba(255,255,255,.7)';for(let i=0;i<8;i++){const cx=((i*170-cam*.25)%(LW+170)+LW+170)%(LW+170)-85,cy=50+(i*53%140);c.fillRect(cx,cy,60,14);c.fillRect(cx+12,cy-8,30,10)}
+  c.fillStyle=th.hill;for(let i=0;i<6;i++){const hx=((i*140-cam*.5)%(LW+140)+LW+140)%(LW+140)-70;c.beginPath();c.moveTo(hx-80,VH);c.lineTo(hx,VH-120-(i%3)*30);c.lineTo(hx+80,VH);c.fill()}
+  c.save();c.translate(-cam,0);
+  const t0=Math.max(0,Math.floor(cam/T)),t1=Math.min(L.W-1,Math.floor((cam+LW)/T)+1);
+  for(let ty=0;ty<ROWS;ty++)for(let tx=t0;tx<=t1;tx++){const ch=L.m[ty][tx];if(ch!=='.')drawTile(c,ch,tx*T,ty*T,ty>0?L.m[ty-1][tx]:'.',th)}
+  // finish: klein vliegtuig
+  const g=L.goal;c.fillStyle='#e8e8ff';c.fillRect(g.x,g.y-34,56,14);c.fillRect(g.x+40,g.y-50,10,18);c.fillRect(g.x+14,g.y-26,22,4);c.fillStyle='#ff3d5a';c.fillRect(g.x,g.y-30,56,3);c.fillStyle='#3df2ff';c.fillRect(g.x+6,g.y-31,8,6);
+  c.fillStyle='#2a1a10';c.fillRect(g.x+14,g.y-20,6,6);c.fillRect(g.x+38,g.y-20,6,6);text(c,'FINISH',g.x+28,g.y-62,11,'#fff');
+  for(const it of L.items){if(it.got||it.x<cam-30||it.x>cam+LW+30)continue;
+    if(it.t==='*'){const b=Math.sin(S.t*4+it.x)*2;c.fillStyle='#f2ff3d';c.fillRect(it.x-2,it.y-7+b,4,14);c.fillRect(it.x-7,it.y-2+b,14,4);c.fillRect(it.x-4,it.y-4+b,8,8)}
+    else if(it.t==='p'){const b=Math.sin(S.t*3)*3;c.fillStyle='#ff3d5a';c.fillRect(it.x-8,it.y-2+b,16,8);c.fillStyle='#f2ff3d';c.fillRect(it.x-1,it.y-8+b,2,6);const w=(S.t*20|0)%2?16:6;c.fillRect(it.x-w/2,it.y-9+b,w,2)}
+    else if(it.t==='C'){c.fillStyle='#ccc';c.fillRect(it.x+10,it.y-56,3,56);c.fillStyle=it.on?'#3dff8a':'#ff8a3d';for(let i=0;i<3;i++){c.fillRect(it.x+13+i*7,it.y-54+i,7,12-i*2);c.fillStyle=i%2?(it.on?'#3dff8a':'#ff8a3d'):'#fff'}}}
+  for(const e of L.ents)if(!e.dead&&e.x>cam-40&&e.x<cam+LW+40)drawEnemy(c,e,Math.round(e.x),Math.round(e.y));
+  if(!S.dead)drawPip(c,Math.round(P.x),Math.round(P.y));
+  for(const p of parts){c.globalAlpha=Math.min(1,p.l*2.5);c.fillStyle=p.col;c.fillRect(p.x-2,p.y-2,4,4)}c.globalAlpha=1;
+  c.restore();
+  for(const p of pops){c.globalAlpha=Math.min(1,p.l*2);text(c,p.t,p.x-(p.x>LW?cam:0),p.y,p.t.length>12?14:16,p.col);c.globalAlpha=1}
+  // HUD in beeld
+  c.fillStyle='rgba(0,0,0,.35)';c.fillRect(0,0,LW,26);
+  text(c,'♥'+S.lives,8,13,14,'#ff3d5a','left');text(c,'★'+S.stars,60,13,14,'#f2ff3d','left');text(c,'LVL '+S.level,180,13,13,'#fff');text(c,''+S.score,352,13,14,'#fff','right');
+  // bedieningsknoppen
+  c.fillStyle='#0b0b1a';c.fillRect(0,VH,LW,LH-VH);c.fillStyle='#22224a';c.fillRect(0,VH,LW,2);
+  const btn=(x,y,w,h,label,on)=>{c.fillStyle=on?'#ff8a3d':'#1a1a3a';c.fillRect(x,y,w,h);c.strokeStyle='#ff8a3d';c.lineWidth=2;c.strokeRect(x+1,y+1,w-2,h-2);text(c,label,x+w/2,y+h/2+1,22,on?'#0b0b1a':'#ff8a3d')};
+  btn(14,VH+30,78,96,'◀',inp.L);btn(102,VH+30,78,96,'▶',inp.R);btn(226,VH+30,120,96,'SPRING',inp.J);
+  c.restore()}
+
+// ---------- lus en schermen ----------
+let raf=0,last=0;
+function frame(t){raf=0;if(S.state!=='run')return;const dt=Math.min((t-last)/1000,.04);last=t;update(dt);render();if(S.state==='run')raf=requestAnimationFrame(frame)}
+function kick(){if(!raf){last=performance.now();raf=requestAnimationFrame(frame)}}
+function showOv(t,html,label,fn){$('ovT').textContent=t;$('ovP').innerHTML=html;$('ovB').textContent=label;$('ovB').onclick=()=>{unlockAudio();fn()};$('ov').classList.remove('hidden')}
+function run(){$('ov').classList.add('hidden');S.state='run';kick()}
+function pause(){if(S.state!=='run')return;S.state='pause';inp.L=inp.R=inp.J=false;render();showOv('PAUZE','Je spel staat stil.','VERDER',run)}
+function gameOver(){S.state='over';let rec='';if(S.score>S.best){S.best=S.score;store.set('best_sprong',S.best);rec='<b>NIEUW RECORD!</b><br>'}
+  render();showOv('GAME OVER',rec+'Score: '+S.score+'<br>Level: '+S.level+' · Sterren: '+S.stars+'<br>Best: '+S.best,'OPNIEUW',()=>{newGame();run()})}
+$('bPause').onclick=()=>{if(S.state==='run')pause();else if(S.state==='pause')run()};
+function resize(){const r=cvs.getBoundingClientRect();if(!r.width||!r.height)return;const dpr=Math.min(window.devicePixelRatio||1,3);
+  cvs.width=Math.round(r.width*dpr);cvs.height=Math.round(r.height*dpr);scale=Math.min(r.width/LW,r.height/LH);ox=(r.width-LW*scale)/2;oy=(r.height-LH*scale)/2;render()}
+
+// ---------- invoer: meerdere vingers tegelijk ----------
+const touches=new Map();
+function lp(e){const r=cvs.getBoundingClientRect();return{x:(e.clientX-r.left-ox)/scale,y:(e.clientY-r.top-oy)/scale}}
+function zone(p){if(p.y<VH-40)return p.x>LW/2?'J':null;return p.x<97?'L':p.x<200?'R':'J'}
+function syncTouch(){const wasJ=inp.J;inp.L=inp.R=inp.J=false;for(const z of touches.values())if(z)inp[z]=true;if(inp.J&&!wasJ)inp.jp=true}
+cvs.addEventListener('pointerdown',e=>{e.preventDefault();unlockAudio();try{cvs.setPointerCapture(e.pointerId)}catch(_){}touches.set(e.pointerId,zone(lp(e)));syncTouch()});
+cvs.addEventListener('pointermove',e=>{if(!touches.has(e.pointerId))return;const z=zone(lp(e));if(touches.get(e.pointerId)==='J'&&z!=='J')return;touches.set(e.pointerId,z);syncTouch()});
+const up=e=>{touches.delete(e.pointerId);syncTouch()};
+cvs.addEventListener('pointerup',up);cvs.addEventListener('pointercancel',up);
+const KEYS={ArrowLeft:'L',a:'L',ArrowRight:'R',d:'R',ArrowUp:'J',' ':'J',w:'J'};
+addEventListener('keydown',e=>{if(e.key==='p'||e.key==='Escape'){if(S.state==='run')pause();else if(S.state==='pause')run();return}
+  const k=KEYS[e.key];if(!k)return;e.preventDefault();if(k==='J'&&!inp.J&&!e.repeat)inp.jp=true;inp[k]=true});
+addEventListener('keyup',e=>{const k=KEYS[e.key];if(k)inp[k]=false});
+addEventListener('blur',()=>{inp.L=inp.R=inp.J=false});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)pause()});
+addEventListener('pagehide',pause);addEventListener('resize',resize);
+document.addEventListener('gesturestart',e=>e.preventDefault());
+document.addEventListener('touchmove',e=>{if(e.target===cvs)e.preventDefault()},{passive:false});
+
+newGame();resize();
+showOv('WOLKENSPRINGER','Help piloot <b>Pip</b> naar zijn vliegtuig!<br><br><b>◀ ▶</b> lopen · <b>SPRING</b> springen (langer drukken = hoger)<br>Spring op vijanden om ze uit te schakelen, maar niet op de paarse stekelbollen!<br><br>Pak de <b>propellerpet</b> voor een dubbele sprong. Hij beschermt je ook één keer.<br>Elke 50 ★ = extra leven.','START',run);
+</script>
+</body>
+</html>
